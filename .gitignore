@@ -1,3 +1,44 @@
+# Zig build artifacts
 *~
-.zig-cache
-zig-out
+.zig-cache/
+zig-out/
+
+# Rust build artifacts
+proxy-rust/target/
+proxy-rust/Cargo.lock
+
+# Model files (too large for git)
+*.gguf
+*.safetensors
+*.bin
+*.model
+
+# Certificate files (sensitive/system-specific)
+*.crt
+*.pem
+*.key
+ca-bundle.crt
+cloudflare-*.crt
+
+# Docker artifacts
+docker-ca-inject
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Environment files
+.env
+.env.local
+
+# Test files
+test-download.*
+/tmp/
+
+# Large downloads
+*.tar.gz
+*.zip
+downloads/

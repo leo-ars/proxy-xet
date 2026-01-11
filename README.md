@@ -1,160 +1,203 @@
-# zig-xet
+# proxy-xet
 
 <p align="center">
   <img src=".media/logo.jpg" />
 </p>
 
-A pure Zig implementation of the XET protocol for efficient file storage and retrieval through content-defined chunking and deduplication.
+A production-ready HTTP proxy server for the XET protocol, enabling efficient streaming downloads of large ML models from HuggingFace.
 
-## What is this?
+## Overview
 
-XET is a protocol for handling large files by breaking them into chunks based on their content (not fixed sizes), compressing them, and storing them in a way that eliminates duplicates.
+This project combines Zig's XET protocol implementation with a high-performance Rust HTTP server to provide a scalable proxy for downloading models and datasets. Files are streamed directly to clients without buffering, making it ideal for serving large models in production environments.
 
-It's particularly useful for managing large models and datasets, like those hosted on HuggingFace.
+**Key Features:**
+- 🚀 Streaming downloads (no disk buffering)
+- 🔄 Multi-platform Docker support (AMD64, ARM64)
+- ⚡ Fast performance (~35-45 MB/s)
+- 🔒 Secure, non-root container execution
+- 📦 Small footprint (10-40 MB Docker images)
 
-This library implements the full XET protocol spec in Zig, including:
+## Quick Start
 
-- Content-defined chunking using the Gearhash algorithm (chunks are between 8KB-128KB)
-- LZ4 compression with byte grouping optimization and experimental bit grouping
-- Merkle tree construction for efficient file verification
-- Xorb format for serializing chunked data
-- MDB shard format for metadata storage
-- CAS client for downloading files from HuggingFace
-- Parallel chunk fetching, decompression, and hashing using thread pools
+### Docker (Recommended)
 
-The implementation has been cross-verified against the Rust reference implementation to ensure correctness.
+```bash
+# Build for AMD64 (servers)
+docker buildx build \
+  --platform linux/amd64 \
+  --file Dockerfile.proxy \
+  --tag xet-proxy:latest \
+  --load \
+  .
 
-It can be compiled to WebAssembly, but runs at about 45% of the non-threaded native speed.
+# Run the proxy
+export HF_TOKEN=your_huggingface_token
+docker run -p 8080:8080 -e HF_TOKEN=$HF_TOKEN xet-proxy:latest
 
-## Quick start
+# Test it
+curl http://localhost:8080/health
+```
+
+### Local Development
+
+```bash
+# Build Zig CLI
+zig build -Doptimize=ReleaseFast
+
+# Build Rust proxy
+cd proxy-rust && cargo build --release
+
+# Run
+export HF_TOKEN=your_token
+export ZIG_BIN_PATH=./zig-out/bin/xet-download
+./proxy-rust/target/release/xet-proxy
+```
+
+## API Endpoints
+
+### GET /health
+Health check
+```bash
+curl http://localhost:8080/health
+# Response: {"status":"ok","version":"0.1.0"}
+```
+
+### GET /download/:owner/:repo/*file
+Download file by repository path
+```bash
+curl http://localhost:8080/download/jedisct1/MiMo-7B-RL-GGUF/model.gguf -o model.gguf
+```
+
+### GET /download-hash/:hash
+Download file directly by XET hash (faster)
+```bash
+curl http://localhost:8080/download-hash/ef62b7509a2c...5bd -o model.safetensors
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Docker Container                                    │
+│                                                     │
+│  ┌──────────────────────┐     ┌──────────────────┐ │
+│  │ Rust HTTP Server     │────▶│ Zig XET CLI      │ │
+│  │ (Axum framework)     │     │ (Protocol impl)  │ │
+│  └──────────────────────┘     └──────────────────┘ │
+│          │                              │           │
+└──────────┼──────────────────────────────┼───────────┘
+           │                              │
+           ▼                              ▼
+      HTTP Client                  HuggingFace API
+```
+
+The Rust server handles HTTP routing and client connections, spawning the Zig CLI to process XET protocol operations. Files stream directly from HuggingFace through the pipeline to the client.
+
+## Multi-Platform Docker Builds
+
+Build for different architectures:
+
+```bash
+# AMD64 (x86_64) - for most servers
+docker buildx build --platform linux/amd64 -f Dockerfile.proxy -t xet-proxy:amd64 --load .
+
+# ARM64 (Apple Silicon, ARM servers)
+docker buildx build --platform linux/arm64 -f Dockerfile.proxy -t xet-proxy:arm64 --load .
+```
+
+**Image sizes:**
+- AMD64: ~10 MB
+- ARM64: ~36 MB
+
+## Deployment
+
+### Push to Private Registry
+```bash
+docker tag xet-proxy:latest registry.example.com/xet-proxy:latest
+docker push registry.example.com/xet-proxy:latest
+```
+
+### Export for Airgapped Systems
+```bash
+docker save xet-proxy:latest -o xet-proxy.tar
+# Transfer xet-proxy.tar to target system
+docker load -i xet-proxy.tar
+```
+
+## Performance
+
+Tested with 7.73GB model download:
+- **Speed:** 35-45 MB/s average
+- **Memory:** 200-500 MB
+- **Time:** ~3-4 minutes for 7.5GB file
+
+## Development
 
 ### Requirements
-
 - Zig 0.16 or newer
-- A HuggingFace token (for downloading models)
+- Rust 1.83 or newer
+- Docker with buildx (for multi-platform builds)
 
-### Build and test
-
+### Build from Source
 ```bash
-# Build the project
-zig build
+# Build everything
+zig build -Doptimize=ReleaseFast
+cd proxy-rust && cargo build --release
 
-# Run tests (98 tests covering all components)
-zig build test
-
-# Run the demo CLI
-zig build run
-
-# Run benchmarks
-zig build bench
+# Run tests
+zig build test  # 106 Zig tests
+cd proxy-rust && cargo test  # Rust tests
 ```
 
-### Downloading a model from HuggingFace
-
-The most common use case is downloading models efficiently:
-
-```bash
-# Set your HuggingFace token
-export HF_TOKEN="your_token_here"
-
-# Run the download example (sequential)
-zig build run-example-download
-
-# Run the parallel download example (faster for large files)
-zig build run-example-parallel
+### Project Structure
+```
+.
+├── src/              # Zig XET protocol implementation
+├── proxy-rust/       # Rust HTTP server (Axum)
+├── examples/         # Usage examples
+├── Dockerfile.proxy  # Multi-stage Docker build
+└── scripts/          # Utility scripts
 ```
 
-The parallel version uses multiple threads to fetch, decompress, and hash chunks simultaneously, providing significant performance improvements for large models.
+## XET Protocol
 
-### Using as a library
+This implementation follows the official [XET Protocol Specification](https://jedisct1.github.io/draft-denis-xet/draft-denis-xet.html), featuring:
 
-Add to your `build.zig.zon`:
+- **Content-defined chunking** using Gearhash (8KB-128KB chunks)
+- **BLAKE3 hashing** with Merkle tree construction
+- **LZ4 compression** with byte grouping optimization
+- **Deduplication** via content-addressable storage
+- **Parallel fetching** with thread pools
 
-```zig
-.dependencies = .{
-    .xet = .{
-        .url = "https://github.com/yourusername/zig-xet/archive/main.tar.gz",
-    },
-},
-```
+The Zig implementation is cross-verified against the reference implementation to ensure byte-for-byte compatibility.
 
-Then in your code:
+## Documentation
 
-```zig
-const std = @import("std");
-const xet = @import("xet");
+- [DOCKER.md](DOCKER.md) - Docker deployment guide
+- [AGENTS.md](AGENTS.md) - Developer guide for AI agents
+- [PROXY_README.md](PROXY_README.md) - Detailed proxy documentation
 
-// Chunk a file using content-defined chunking
-var chunks = try xet.chunking.chunkBuffer(allocator, data);
-defer chunks.deinit(allocator);
+## Credits
 
-// Hash chunks with BLAKE3
-const hash = xet.hashing.computeDataHash(chunk_data);
+This project is based on the original [zig-xet](https://github.com/jedisct1/zig-xet) implementation by [@jedisct1](https://github.com/jedisct1), which provides the core XET protocol implementation in Zig. This fork adds a production-ready HTTP proxy server and enhanced Docker deployment capabilities.
 
-// Build a Merkle tree for verification
-const merkle_root = try xet.hashing.buildMerkleTree(allocator, &nodes);
+**Original XET Protocol:**
+- Specification: [@jedisct1](https://github.com/jedisct1)
+- Rust reference implementation: XET Labs
 
-// Download a model from HuggingFace (sequential)
-var io_instance = std.Io.Threaded.init(allocator);
-defer io_instance.deinit();
-const io = io_instance.io();
+## License
 
-const config = xet.model_download.DownloadConfig{
-    .repo_id = "org/model",
-    .repo_type = "model",
-    .revision = "main",
-    .file_hash_hex = "...",
-};
-try xet.model_download.downloadModelToFile(allocator, io, config, "output.gguf");
+Same as the original zig-xet project.
 
-// Or download with parallel fetching (faster for large files)
-try xet.model_download.downloadModelToFileParallel(
-    allocator,
-    io,
-    config,
-    "output.gguf",
-    false, // Don't compute hashes during download
-);
-```
+## Contributing
 
-## How it works
+Contributions welcome! Please ensure:
+- All Zig tests pass (`zig build test`)
+- Code follows the existing style
+- Docker builds succeed for both AMD64 and ARM64
 
-The XET protocol processes files in several stages:
+## Getting a HuggingFace Token
 
-1. Chunking: Files are split using a rolling hash algorithm. Instead of fixed-size chunks, boundaries are determined by content patterns, which means similar files share many identical chunks.
-
-2. Hashing: Each chunk gets a BLAKE3 hash. A Merkle tree combines these hashes to create a single file identifier.
-
-3. Compression: Chunks are compressed with LZ4, optionally with byte grouping preprocessing for better ratios.
-
-4. Deduplication: Identical chunks (same hash) are stored only once, saving space when you have multiple similar files.
-
-5. Storage: Chunks are bundled into "xorbs" and metadata is stored in "MDB shards" for efficient retrieval.
-
-When downloading from HuggingFace, the library queries the CAS (content-addressable storage) API to find which chunks are needed, fetches them (optionally in parallel using a thread pool), decompresses, and reconstructs the original file.
-
-### Performance
-
-The parallel fetching implementation uses a thread pool to simultaneously:
-- Download chunks via HTTP
-- Decompress chunks
-- Compute BLAKE3 hashes
-
-This provides significant speedup for large models, especially on multi-core systems with good network bandwidth.
-
-## Protocol compliance
-
-This implementation follows the official XET protocol specification exactly.
-
-All constants, algorithms, and formats match the reference Rust implementation byte-for-byte. The test suite includes cross-verification tests to ensure continued compatibility.
-
-## Getting a HuggingFace token
-
-1. Go to https://huggingface.co/settings/tokens
-2. Create a new token with "Read access to contents of all public gated repos you can access"
-3. Copy the token and set it as `HF_TOKEN` environment variable
-
-## Links
-
-- [XET Protocol Draft Specification](https://jedisct1.github.io/draft-denis-xet/draft-denis-xet.html)
-- [XET Protocol Documentation](https://huggingface.co/docs/xet/index)
+1. Visit https://huggingface.co/settings/tokens
+2. Create a token with "Read access to contents of all public gated repos"
+3. Set as environment variable: `export HF_TOKEN=your_token`

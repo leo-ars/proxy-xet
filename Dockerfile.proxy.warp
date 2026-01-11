@@ -1,0 +1,80 @@
+# Multi-stage build: Rust HTTP proxy + Zig XET implementation (WARP-compatible)
+
+# Stage 1: Build Zig CLI
+FROM alpine:3.19 AS zig-builder
+
+RUN apk update && apk add --no-cache \
+    curl \
+    tar \
+    xz \
+    ca-certificates
+
+# Detect architecture and download appropriate Zig version
+ARG ZIG_VERSION=0.16.0-dev.2075+62d6bbc7d
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ZIG_ARCH="aarch64"; \
+    else \
+        ZIG_ARCH="x86_64"; \
+    fi && \
+    curl -o /tmp/zig.tar.xz \
+    "https://ziglang.org/builds/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" && \
+    tar -C /usr/local -xf /tmp/zig.tar.xz && \
+    mv /usr/local/zig-* /usr/local/zig && \
+    rm /tmp/zig.tar.xz
+
+WORKDIR /build
+COPY . .
+RUN /usr/local/zig/zig build -Doptimize=ReleaseFast
+
+# Stage 2: Build Rust HTTP proxy
+FROM rust:1.75-alpine AS rust-builder
+
+RUN apk update && apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconfig
+
+WORKDIR /build
+COPY proxy-rust/ .
+RUN cargo build --release
+
+# Stage 3: Runtime image with WARP support
+FROM alpine:3.19
+
+RUN apk update && apk add --no-cache \
+    ca-certificates \
+    libgcc \
+    wget \
+    su-exec
+
+# Copy Zig CLI binary
+COPY --from=zig-builder /build/zig-out/bin/xet-download /usr/local/bin/xet-download
+
+# Copy Rust proxy binary
+COPY --from=rust-builder /build/target/release/xet-proxy /usr/local/bin/xet-proxy
+
+# Create directory for WARP certificate
+RUN mkdir -p /usr/local/share/ca-certificates
+
+# Copy entrypoint script
+COPY docker/entrypoint-warp.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Non-root user
+RUN adduser -D -u 1000 xet
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Set environment for the proxy to find the Zig binary
+ENV ZIG_BIN_PATH=/usr/local/bin/xet-download
+
+# Use entrypoint for certificate injection
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["xet-proxy"]

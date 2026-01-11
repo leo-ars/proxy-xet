@@ -1,0 +1,87 @@
+# Multi-stage Dockerfile that builds WITH WARP enabled
+# Uses cert-injected Alpine base images
+
+# Stage 1: Inject cert into build images
+# (Run docker-ca-inject first to create these)
+
+# Stage 2: Build Zig components
+FROM alpine:3.19-warp AS zig-builder
+
+# Install Zig and build dependencies
+RUN apk add --no-cache \
+    curl \
+    xz \
+    build-base
+
+# Download and install Zig 0.13.0
+RUN curl -L https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz -o zig.tar.xz && \
+    tar -xf zig.tar.xz && \
+    mv zig-linux-aarch64-0.13.0 /opt/zig && \
+    rm zig.tar.xz
+
+ENV PATH="/opt/zig:${PATH}"
+
+# Copy source code
+WORKDIR /build
+COPY build.zig build.zig.zon ./
+COPY src/ ./src/
+
+# Build Zig components
+RUN zig build -Doptimize=ReleaseFast
+
+# Stage 3: Build Rust proxy
+FROM rust:1.92-alpine3.19 AS rust-builder-base
+
+# Inject WARP cert into Rust builder
+FROM alpine:3.19 AS cert-injector
+COPY --from=rust-builder-base / /rust-base/
+# This step would need the cert-injector tool inside Docker
+# For now, we'll inject into rust:1.92-alpine3.19 beforehand
+
+# Use pre-injected Rust image
+FROM rust:1.92-alpine3.19-warp AS rust-builder
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /build
+COPY proxy-rust/Cargo.toml proxy-rust/Cargo.lock ./
+COPY proxy-rust/src/ ./src/
+
+RUN cargo build --release
+
+# Stage 4: Final runtime image
+FROM alpine:3.19-warp
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    ca-certificates \
+    libgcc \
+    libstdc++ \
+    wget \
+    su-exec
+
+# Copy binaries from builders
+COPY --from=zig-builder /build/zig-out/bin/xet-download /usr/local/bin/xet-download
+COPY --from=rust-builder /build/target/release/xet-proxy /usr/local/bin/xet-proxy
+
+# Make executable
+RUN chmod +x /usr/local/bin/xet-download /usr/local/bin/xet-proxy
+
+# Copy entrypoint
+COPY docker/entrypoint-warp.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create user
+RUN adduser -D -u 1000 xet
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+ENV ZIG_BIN_PATH=/usr/local/bin/xet-download
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["xet-proxy"]

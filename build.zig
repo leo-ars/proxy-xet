@@ -243,6 +243,32 @@ pub fn build(b: *std.Build) void {
         if (b.args) |args| {
             run_file_to_xorb.addArgs(args);
         }
+
+        // Note: Zig proxy_server removed - we use Rust proxy (proxy-rust/) instead
+
+        // Download CLI: Simple CLI wrapper for Rust proxy
+        const download_cli = b.addExecutable(.{
+            .name = "xet-download",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/download_cli.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "xet", .module = mod },
+                },
+            }),
+        });
+
+        b.installArtifact(download_cli);
+
+        const download_cli_step = b.step("run-download-cli", "Run the download CLI wrapper");
+        const run_download_cli = b.addRunArtifact(download_cli);
+        download_cli_step.dependOn(&run_download_cli.step);
+        run_download_cli.step.dependOn(b.getInstallStep());
+
+        if (b.args) |args| {
+            run_download_cli.addArgs(args);
+        }
     }
 
     // Just like flags, top level steps are also listed in the `--help` menu.

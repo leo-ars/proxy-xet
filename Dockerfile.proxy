@@ -1,0 +1,73 @@
+# Multi-stage build: Rust HTTP proxy + Zig XET implementation
+# This Dockerfile builds both components for a production-ready XET proxy server
+
+# Stage 1: Build Zig CLI
+FROM alpine:3.19 AS zig-builder
+
+RUN apk update && apk add --no-cache \
+    curl \
+    tar \
+    xz \
+    ca-certificates
+
+# Download latest Zig master build
+ARG ZIG_VERSION=0.16.0-dev.2145+ec25b1384
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ZIG_ARCH="aarch64-linux"; \
+    else \
+        ZIG_ARCH="x86_64-linux"; \
+    fi && \
+    curl -L -o /tmp/zig.tar.xz \
+    "https://ziglang.org/builds/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" && \
+    tar -C /usr/local -xf /tmp/zig.tar.xz && \
+    mv /usr/local/zig-* /usr/local/zig && \
+    rm /tmp/zig.tar.xz
+
+WORKDIR /build
+COPY . .
+RUN /usr/local/zig/zig build -Doptimize=ReleaseFast
+
+# Stage 2: Build Rust HTTP proxy
+FROM rust:1.83-alpine AS rust-builder
+
+RUN apk update && apk add --no-cache \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    pkgconfig
+
+WORKDIR /build
+COPY proxy-rust/ .
+RUN cargo build --release
+
+# Stage 3: Runtime image
+FROM alpine:3.19
+
+RUN apk update && apk add --no-cache \
+    ca-certificates \
+    libgcc \
+    wget
+
+# Copy Zig CLI binary
+COPY --from=zig-builder /build/zig-out/bin/xet-download /usr/local/bin/xet-download
+
+# Copy Rust proxy binary
+COPY --from=rust-builder /build/target/release/xet-proxy /usr/local/bin/xet-proxy
+
+# Non-root user
+RUN adduser -D -u 1000 xet
+USER xet
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Set environment for the proxy to find the Zig binary
+ENV ZIG_BIN_PATH=/usr/local/bin/xet-download
+
+# Run Rust proxy
+CMD ["xet-proxy"]

@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  xet-proxy-warp:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy.warp
+    container_name: xet-proxy-warp
+    ports:
+      - "8080:8080"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - PORT=8080
+      - ZIG_BIN_PATH=/usr/local/bin/xet-download
+      - RUST_LOG=info
+    volumes:
+      # Mount WARP certificate from host (extract with scripts/extract-warp-cert.sh first)
+      - ./cloudflare-warp.crt:/usr/local/share/ca-certificates/cloudflare-warp.crt:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

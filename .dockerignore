@@ -1,0 +1,42 @@
+# Build artifacts
+.zig-cache/
+zig-out/
+target/
+*.o
+*.a
+
+# Rust build artifacts  
+proxy-rust/target/
+
+# Git
+.git/
+.gitignore
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+.media/
+
+# Test files
+*_test.zig
+test*.py
+
+# Large downloaded files
+*.gguf
+*.safetensors
+*.bin
+
+# Certificates and configs
+*.crt
+*.pem
+ca-bundle.crt
+cloudflare-warp*.crt
+
+# Scripts
+scripts/
+docker/
+docker-ca-inject
